@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tu
 _plat = sys.platform.lower()
 is_linux = 'linux' in _plat
 is_openbsd = 'openbsd' in _plat
+is_windows = sys.platform == 'win32'
 base = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -143,7 +144,8 @@ def init_env(
     module: str = 'x11'
 ) -> Env:
     ans = env.copy()
-    ans.cflags.append('-fPIC')
+    if not is_windows:
+        ans.cflags.append('-fPIC')
     ans.cppflags.append(f'-D_GLFW_{module.upper()}')
     ans.cppflags.append('-D_GLFW_BUILD_DLL')
 
@@ -177,6 +179,21 @@ def init_env(
         ans.cppflags.append('-DGL_SILENCE_DEPRECATION')
         for f_ in 'Cocoa IOKit CoreFoundation CoreVideo UniformTypeIdentifiers'.split():
             ans.ldpaths.extend(('-framework', f_))
+
+    elif module == 'win32':
+        # The bundled GLFW win32 backend uses Win32 API and WGL.
+        # Required system libraries are bundled with Windows / MinGW.
+        ans.ldpaths.extend([
+            '-lopengl32',  # WGL / OpenGL
+            '-lgdi32',     # GDI surfaces
+            '-luser32',    # Window/message APIs
+            '-lshell32',   # Shell APIs (DragAcceptFiles, etc.)
+            '-ldwmapi',    # DWM composition
+            '-limm32',     # IME APIs
+            '-lwinmm',     # timeBeginPeriod
+            '-lhid',       # HID joystick
+            '-lversion',   # version info
+        ])
 
     elif module == 'wayland':
         at_least_version('wayland-protocols', *sinfo['wayland_protocols'])

@@ -27,7 +27,26 @@ const (
 	macos_python_framework     = "python/Python.framework/Versions/Current/Python"
 	macos_python_framework_exe = "python/Python.framework/Versions/Current/Resources/Python.app/Contents/MacOS/Python"
 	NERD_URL                   = "https://github.com/ryanoasis/nerd-fonts/releases/latest/download/NerdFontsSymbolsOnly.tar.xz"
+	// Windows uses a system-wide MSYS2 install rather than a downloaded
+	// dependency bundle. KITTY_MSYS2_ROOT can override the location.
+	default_msys2_root = `D:\msys64`
 )
+
+func msys2_root() string {
+	if v := os.Getenv("KITTY_MSYS2_ROOT"); v != "" {
+		return v
+	}
+	for _, candidate := range []string{`D:\msys64`, `C:\msys64`, `C:\tools\msys64`} {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return default_msys2_root
+}
+
+func msys2_mingw64() string {
+	return filepath.Join(msys2_root(), "mingw64")
+}
 
 func root_dir() string {
 	f, e := filepath.Abs(filepath.Join(folder, runtime.GOOS+"-"+runtime.GOARCH))
@@ -282,9 +301,25 @@ func dependencies(args []string) {
 		if runtime.GOARCH != "amd64" {
 			exit("Pre-built dependencies are only available for the amd64 CPU architecture")
 		}
+	case "windows":
+		// On Windows we use a system-wide MSYS2 install (D:\msys64 by
+		// default, override with KITTY_MSYS2_ROOT). All required
+		// dependencies are installed via pacman from mingw-w64-x86_64-*
+		// packages, so the bundled tarball is not used here. Verify the
+		// MSYS2 install instead and bail out with an actionable message
+		// if it is missing.
+		root := msys2_root()
+		mingw := msys2_mingw64()
+		if _, err := os.Stat(filepath.Join(mingw, "bin", "gcc.exe")); err != nil {
+			exit(fmt.Errorf("MSYS2 mingw64 toolchain not found at %s. Install MSYS2 and run:\n  pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-pkgconf mingw-w64-x86_64-python mingw-w64-x86_64-harfbuzz mingw-w64-x86_64-freetype mingw-w64-x86_64-fontconfig mingw-w64-x86_64-pixman mingw-w64-x86_64-cairo mingw-w64-x86_64-lcms2 mingw-w64-x86_64-libpng mingw-w64-x86_64-zlib mingw-w64-x86_64-xxhash mingw-w64-x86_64-openssl mingw-w64-x86_64-glfw\nThen rerun ./dev.sh deps. (current MSYS2_ROOT=%s)", mingw, root))
+		}
+		fmt.Println("Using system MSYS2 toolchain at:", mingw)
+		fmt.Println("Skipping prebuilt dependency bundle (Windows uses MSYS2 packages instead).")
+		fmt.Println("Now build kitty with: ./dev.sh build")
+		exit(0)
 	}
 	if which == "" {
-		exit("Prebuilt dependencies are only available for Linux and macOS")
+		exit("Prebuilt dependencies are only available for Linux, macOS and Windows (via MSYS2)")
 	}
 	url = strings.Replace(url, "{}", which, 1)
 	if err := os.RemoveAll(root_dir()); err != nil {
@@ -376,22 +411,50 @@ func setup_to_run_python() (python string) {
 		python = filepath.Join(root, "bin", "python")
 	case `darwin`:
 		python = filepath.Join(root, macos_python)
+	case "windows":
+		mingw := msys2_mingw64()
+		// Put the MSYS2 mingw64 toolchain at the front of PATH so that
+		// gcc, pkgconf, freetype-config etc are picked up.
+		prepend("PATH", filepath.Join(msys2_root(), "usr", "bin"))
+		prepend("PATH", filepath.Join(mingw, "bin"))
+		python = filepath.Join(mingw, "bin", "python.exe")
+		if _, err := os.Stat(python); err != nil {
+			// Some MSYS2 installs only ship `python3.exe`.
+			alt := filepath.Join(mingw, "bin", "python3.exe")
+			if _, err2 := os.Stat(alt); err2 == nil {
+				python = alt
+			}
+		}
 	default:
-		exit("Building is only supported on Linux and macOS")
+		exit("Building is only supported on Linux, macOS and Windows")
 	}
 	return
 }
 
 func build(args []string) {
 	chdir_to_base()
-	if _, err := os.Stat(folder); err != nil {
-		dependencies(nil)
+	if runtime.GOOS != "windows" {
+		if _, err := os.Stat(folder); err != nil {
+			dependencies(nil)
+		}
 	}
 	root := root_dir()
-	os.Setenv("DEVELOP_ROOT", root)
-	prepend("PKG_CONFIG_PATH", filepath.Join(root, "lib", "pkgconfig"))
-	if runtime.GOOS == "darwin" {
-		os.Setenv("PKGCONFIG_EXE", filepath.Join(root, "bin", "pkg-config"))
+	if runtime.GOOS == "windows" {
+		// Use MSYS2 mingw64 for everything on Windows.
+		mingw := msys2_mingw64()
+		os.Setenv("DEVELOP_ROOT", mingw)
+		prepend("PKG_CONFIG_PATH", filepath.Join(mingw, "lib", "pkgconfig"))
+		os.Setenv("PKGCONFIG_EXE", filepath.Join(mingw, "bin", "pkgconf.exe"))
+		// Tell setup.py / glfw to use gcc.
+		if os.Getenv("CC") == "" {
+			os.Setenv("CC", filepath.Join(mingw, "bin", "gcc.exe"))
+		}
+	} else {
+		os.Setenv("DEVELOP_ROOT", root)
+		prepend("PKG_CONFIG_PATH", filepath.Join(root, "lib", "pkgconfig"))
+		if runtime.GOOS == "darwin" {
+			os.Setenv("PKGCONFIG_EXE", filepath.Join(root, "bin", "pkg-config"))
+		}
 	}
 	python := setup_to_run_python()
 	args = append([]string{"setup.py", "develop"}, args...)

@@ -336,8 +336,11 @@ def cc_version() -> Tuple[List[str], Tuple[int, int]]:
                 q = 'clang'
             else:
                 q = 'cc'
-    cc = shlex.split(q)
-    if is_windows and cc[0].lower() == 'cl.exe':
+    # On Windows backslashes in paths must not be treated as shell escapes,
+    # otherwise something like D:\msys64\mingw64\bin\gcc.exe becomes
+    # D:msys64mingw64bingcc.exe and FileNotFoundError ensues.
+    cc = shlex.split(q, posix=not is_windows)
+    if is_windows and cc[0].lower().endswith('cl.exe'):
         raw = subprocess.check_output(cc + ['/?']).decode()
         if m := re.search(r'Compiler Version ([\d\.]+)', raw):
             parts = tuple(map(int, m.group(1).split('.')))
@@ -669,9 +672,19 @@ def kitty_env(args: Options) -> Env:
     cflags.extend(pkg_config('lcms2', '--cflags-only-I'))
     cflags.extend(xxhash[0])
     # simde doesnt come with pkg-config files but some Linux distros add
-    # them and on macOS when building with homebrew it is required
+    # them and on macOS when building with homebrew it is required.
+    # On Windows MSYS2 there is no simde package at all so we vendor it
+    # under third_party/simde and add that as an include path fallback.
+    simde_found = False
     with suppress(SystemExit, subprocess.CalledProcessError):
-        cflags.extend(pkg_config('simde', '--cflags-only-I', fatal=False))
+        simde_cflags = pkg_config('simde', '--cflags-only-I', fatal=False)
+        if simde_cflags:
+            cflags.extend(simde_cflags)
+            simde_found = True
+    if not simde_found:
+        vendored_simde = os.path.join(src_base, 'third_party', 'simde')
+        if os.path.isdir(os.path.join(vendored_simde, 'simde')):
+            cflags.append(f'-I{vendored_simde}')
     libcrypto_cflags, libcrypto_ldflags = libcrypto_flags()
     cflags.extend(libcrypto_cflags)
     if is_macos:
@@ -697,7 +710,14 @@ def kitty_env(args: Options) -> Env:
     cflags.extend(pkg_config('harfbuzz', '--cflags-only-I'))
     platform_libs.extend(pkg_config('harfbuzz', '--libs'))
     pylib = get_python_flags(args, cflags)
-    gl_libs = ['-framework', 'OpenGL'] if is_macos else pkg_config('gl', '--libs')
+    if is_macos:
+        gl_libs = ['-framework', 'OpenGL']
+    elif is_windows:
+        # On Windows OpenGL ships with the OS as opengl32.dll/opengl32.lib;
+        # there is no pkg-config file. gdi32 is needed for WGL surface APIs.
+        gl_libs = ['-lopengl32', '-lgdi32']
+    else:
+        gl_libs = pkg_config('gl', '--libs')
     libpng = pkg_config('libpng', '--libs')
     lcms2 = pkg_config('lcms2', '--libs')
     ans.ldpaths += pylib + platform_libs + gl_libs + libpng + lcms2 + libcrypto_ldflags + xxhash[1]
@@ -898,6 +918,31 @@ def parallel_run(items: List[Command]) -> None:
         nonlocal failed
         if not workers:
             return
+        if is_windows:
+            # os.wait() does not exist on Windows. Poll the live workers
+            # until at least one has exited, then drain all newly-finished
+            # ones in this call so the outer scheduler can re-fill the slot.
+            while True:
+                done_pids = []
+                for pid, (cc, w) in workers.items():
+                    if w is None:
+                        continue
+                    rc = w.poll()
+                    if rc is not None:
+                        done_pids.append((pid, rc))
+                if done_pids:
+                    break
+                time.sleep(0.005)
+            for pid, rc in done_pids:
+                cc, w = workers.pop(pid, (None, None))
+                if cc is None:
+                    continue
+                if rc != 0:
+                    if failed is None:
+                        failed = cc
+                elif cc.on_success is not None:
+                    cc.on_success()
+            return
         pid, s = os.wait()
         compile_cmd, w = workers.pop(pid, (None, None))
         if compile_cmd is None:
@@ -1061,7 +1106,12 @@ def find_c_files() -> Tuple[List[str], List[str]]:
 
 
 def compile_glfw(compilation_database: CompilationDatabase, build_dsym: bool = False) -> None:
-    modules = 'cocoa' if is_macos else 'x11 wayland'
+    if is_macos:
+        modules = 'cocoa'
+    elif is_windows:
+        modules = 'win32'
+    else:
+        modules = 'x11 wayland'
     for module in modules.split():
         try:
             genv = glfw.init_env(env, pkg_config, pkg_version, at_least_version, test_compile, module)
@@ -1417,9 +1467,17 @@ def build_launcher(args: Options, launcher_dir: str = '.', bundle_type: str = 's
         cppflags.append('-DFROM_SOURCE')
     elif bundle_type == 'develop':
         cppflags.append('-DFROM_SOURCE')
-        ph = os.path.relpath(os.environ["DEVELOP_ROOT"], '.')
-        cppflags.append(f'-DSET_PYTHON_HOME="{ph}"')
-        if not is_macos:
+        try:
+            ph = os.path.relpath(os.environ["DEVELOP_ROOT"], '.')
+        except ValueError:
+            # On Windows the DEVELOP_ROOT (e.g. D:\msys64\mingw64) may live
+            # on a different drive than the kitty source tree (C:\), in
+            # which case relpath raises ValueError. Fall back to absolute.
+            ph = os.path.abspath(os.environ["DEVELOP_ROOT"])
+        # Embedded path needs to use forward slashes / escaped backslashes
+        # so it survives the shell quoting on Windows.
+        cppflags.append(f'-DSET_PYTHON_HOME="{ph.replace(chr(92), "/")}"')
+        if not is_macos and not is_windows:
             ldflags += ['-Wl,--disable-new-dtags', f'-Wl,-rpath,$ORIGIN/../../{ph}/lib']
     if bundle_type.startswith('macos-'):
         klp = '../Resources/kitty'
