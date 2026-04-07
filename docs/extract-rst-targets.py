@@ -29,7 +29,9 @@ def main() -> Dict[str, Dict[str, str]]:
             dirnames.remove('generated')
         for f in filenames:
             if f.endswith('.rst'):
-                with open(os.path.join(dirpath, f)) as stream:
+                # Force UTF-8: Python on Windows defaults to cp1252 which chokes on
+                # the unicode characters present in some kitty docs.
+                with open(os.path.join(dirpath, f), encoding='utf-8') as stream:
                     raw = stream.read()
                 href = os.path.relpath(stream.name, base).replace(os.sep, '/')
                 href = href.rpartition('.')[0] + '/'

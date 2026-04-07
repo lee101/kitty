@@ -415,6 +415,13 @@ def get_sanitize_args(cc: List[str], ccver: Tuple[int, int]) -> List[str]:
 def get_binary_arch(path: str) -> BinaryArch:
     with open(path, 'rb') as f:
         sig = f.read(64)
+        if sig.startswith(b'MZ'):  # PE/COFF (Windows .exe / .obj from MinGW or MSVC)
+            # IMAGE_DOS_HEADER.e_lfanew is at offset 0x3c and points to PE\0\0 signature.
+            e_lfanew, = struct.unpack_from('<I', sig, 0x3c)
+            f.seek(e_lfanew)
+            pe_header = f.read(24)  # 4-byte PE\0\0 + 20-byte IMAGE_FILE_HEADER
+        else:
+            pe_header = b''
     if sig.startswith(b'\x7fELF'):  # ELF
         bits = {1: 32, 2: 64}[sig[4]]
         endian = {1: '<', 2: '>'}[sig[5]]
@@ -425,6 +432,21 @@ def get_binary_arch(path: str) -> BinaryArch:
         bits = {0xfeedface: 32, 0xfeedfacf: 64}[s]
         cpu_type &= 0xff
         isa = {0x7: ISA.AMD64, 0xc: ISA.ARM64}[cpu_type]
+    elif sig.startswith(b'MZ') and pe_header[:4] == b'PE\x00\x00':  # PE/COFF
+        # IMAGE_FILE_HEADER.Machine is the first WORD after the PE\0\0 signature.
+        machine, = struct.unpack_from('<H', pe_header, 4)
+        # IMAGE_FILE_MACHINE_* constants from winnt.h
+        pe_machine_to_isa = {
+            0x014c: (32, ISA.X86),    # IMAGE_FILE_MACHINE_I386
+            0x8664: (64, ISA.AMD64),  # IMAGE_FILE_MACHINE_AMD64
+            0xaa64: (64, ISA.ARM64),  # IMAGE_FILE_MACHINE_ARM64
+            0x01c0: (32, ISA.Other),  # IMAGE_FILE_MACHINE_ARM
+            0x01c4: (32, ISA.Other),  # IMAGE_FILE_MACHINE_ARMNT (Thumb-2)
+        }
+        bits, isa = pe_machine_to_isa.get(machine, (64, ISA.Other))
+    elif sig.startswith(b'MZ'):
+        # MZ header but no PE follow-on - treat as 64-bit AMD64 fallback so build can proceed.
+        bits, isa = 64, ISA.AMD64
     else:
         raise SystemExit(f'Unknown binary format with signature: {sig[:4]!r}')
     return BinaryArch(bits=bits, isa=isa)
