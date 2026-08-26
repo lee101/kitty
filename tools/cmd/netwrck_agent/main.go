@@ -3,6 +3,8 @@
 package netwrck_agent
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -94,6 +96,8 @@ func runServe(opts *Options) (int, error) {
 		Addr:              opts.ListenAddr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 	fmt.Fprintf(os.Stderr, "netwrck-agent listening on http://%s\n", opts.ListenAddr)
 	return 0, server.ListenAndServe()
@@ -261,8 +265,15 @@ func (s *service) resolveCwd(in string) string {
 	return filepath.Join(s.defaultCwd, in)
 }
 
+const (
+	maxJSONBodyBytes = 1 << 20
+	shellTimeout     = 2 * time.Minute
+	maxShellOutput   = 2 << 20
+)
+
 func decodeJSON(r *http.Request, dest any) error {
 	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(nil, r.Body, maxJSONBodyBytes)
 	return json.NewDecoder(r.Body).Decode(dest)
 }
 
@@ -293,19 +304,60 @@ func runShellCommand(cwd, command string) (*shellResponse, error) {
 		}
 		return &shellResponse{Command: command, Cwd: next, ExitCode: 0}, nil
 	}
-	cmd := exec.Command("bash", "-lc", command)
+	ctx, cancel := context.WithTimeout(context.Background(), shellTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bash", "-lc", command)
 	cmd.Dir = cwd
-	out, err := cmd.Output()
-	resp := &shellResponse{Command: command, Cwd: cwd, Stdout: string(out)}
+	var stdout, stderr limitedBuffer
+	stdout.limit = maxShellOutput
+	stderr.limit = maxShellOutput
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	resp := &shellResponse{Command: command, Cwd: cwd, Stdout: stdout.String()}
 	if err == nil {
 		return resp, nil
 	}
 	if ee, ok := err.(*exec.ExitError); ok {
 		resp.ExitCode = ee.ExitCode()
-		resp.Stderr = string(ee.Stderr)
+		resp.Stderr = stderr.String()
+		return resp, nil
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		resp.ExitCode = -1
+		resp.Stderr = fmt.Sprintf("timed out after %s\n%s", shellTimeout, stderr.String())
 		return resp, nil
 	}
 	return nil, err
+}
+
+// limitedBuffer caps captured output so a chatty command cannot exhaust
+// memory; the head is kept and truncation is marked.
+type limitedBuffer struct {
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if b.buf.Len() >= b.limit {
+		b.truncated = true
+		return len(p), nil
+	}
+	n := min(b.limit-b.buf.Len(), len(p))
+	b.buf.Write(p[:n])
+	if n < len(p) {
+		b.truncated = true
+	}
+	return len(p), nil
+}
+
+func (b *limitedBuffer) String() string {
+	s := b.buf.String()
+	if b.truncated {
+		s += "\n...[output truncated]"
+	}
+	return s
 }
 
 type codexClient struct {
