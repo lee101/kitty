@@ -31,6 +31,7 @@ import (
 	"github.com/kovidgoyal/kitty/tools/cmd/benchmark"
 	"github.com/kovidgoyal/kitty/tools/cmd/edit_in_kitty"
 	"github.com/kovidgoyal/kitty/tools/cmd/mouse_demo"
+	"github.com/kovidgoyal/kitty/tools/cmd/netwrck_agent"
 	"github.com/kovidgoyal/kitty/tools/cmd/pytest"
 	"github.com/kovidgoyal/kitty/tools/cmd/run_shell"
 	"github.com/kovidgoyal/kitty/tools/cmd/show_error"
@@ -108,6 +109,8 @@ func KittyToolEntryPoints(root *cli.Command) {
 	query_terminal.EntryPoint(root)
 	// __pytest__
 	pytest.EntryPoint(root)
+	// netwrck-agent
+	netwrck_agent.EntryPoint(root)
 	// __hold_till_enter__
 	root.AddSubCommand(&cli.Command{
 		Name:            "__hold_till_enter__",

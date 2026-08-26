@@ -19,6 +19,7 @@ require (
 	github.com/kovidgoyal/go-parallel v1.1.1
 	github.com/kovidgoyal/go-shm v1.0.0
 	github.com/kovidgoyal/imaging v1.8.23
+	github.com/lee101/gobed v0.0.0
 	github.com/nwaples/rardecode/v2 v2.2.5
 	github.com/seancfoley/ipaddress-go v1.7.1
 	github.com/sgtdi/fswatcher v1.3.0
@@ -38,14 +39,23 @@ require (
 // Uncomment the following to use a local checkout of imaging
 // replace github.com/kovidgoyal/imaging => ../imaging
 
+replace github.com/lee101/gobed => ../gobed
+
 require (
 	github.com/dlclark/regexp2/v2 v2.2.1 // indirect
+	github.com/emirpasic/gods v1.18.1 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
 	github.com/lufia/plan9stats v0.0.0-20230326075908-cb1d2100619a // indirect
+	github.com/mitchellh/colorstring v0.0.0-20190213212951-d06e56a500db // indirect
+	github.com/patrickmn/go-cache v2.1.0+incompatible // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
+	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/rwcarlsen/goexif v0.0.0-20190401172101-9e8deecbddbd // indirect
+	github.com/schollz/progressbar/v2 v2.15.0 // indirect
 	github.com/seancfoley/bintree v1.3.1 // indirect
+	github.com/sugarme/regexpset v0.0.0-20200920021344-4d4ec8eaf93c // indirect
+	github.com/sugarme/tokenizer v0.3.0 // indirect
 	github.com/tklauser/go-sysconf v0.3.16 // indirect
 	github.com/tklauser/numcpus v0.11.0 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
